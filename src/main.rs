@@ -1,87 +1,20 @@
+extern crate float_ord;
 extern crate piston_window;
 extern crate rand;
 
+pub mod timing;
+
 use std::f64::consts::PI;
+use std::f64::{EPSILON, INFINITY};
+use float_ord::FloatOrd;
 use piston_window::*;
 use piston_window::types::Color;
 use piston_window::color::WHITE;
-
-fn duration_to_f64(t: std::time::Duration) -> f64 {
-    t.as_secs() as f64 + 1e-9 * t.subsec_nanos() as f64
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Countdown {
-    remaining: f64,
-}
-
-impl From<f64> for Countdown {
-    fn from(remaining: f64) -> Self {
-        Self { remaining }
-    }
-}
-
-impl From<Countdown> for f64 {
-    fn from(countdown: Countdown) -> Self {
-        countdown.remaining
-    }
-}
-
-impl Countdown {
-    fn tick(&mut self, env: &Env) -> Result<(), ()> {
-        if !self.is_expired() {
-            self.remaining -= env.time_delta;
-            Ok(())
-        } else {
-            Err(())
-        }
-    }
-
-    fn reset(&mut self, time: f64) {
-        self.remaining = time;
-    }
-
-    fn is_expired(&self) -> bool {
-        self.remaining <= 0.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Timer {
-    duration: f64,
-    countdown: Countdown,
-}
-
-impl From<f64> for Timer {
-    fn from(duration: f64) -> Self {
-        Self {
-            duration: duration,
-            countdown: From::from(duration),
-        }
-    }
-}
-
-impl Timer {
-    fn tick(&mut self, env: &Env) -> Result<(), ()> {
-        self.countdown.tick(env)
-    }
-
-    fn reset(&mut self, time: f64) {
-        *self = From::from(time);
-    }
-
-    fn remaining(&self) -> f64 {
-        self.countdown.remaining
-    }
-
-    fn is_expired(&self) -> bool {
-        self.countdown.is_expired()
-    }
-}
+use timing::*;
 
 #[derive(Clone, Debug)]
 struct Env {
-    time_delta: f64,
+    clock: Clock,
     mouse_pos: [f64; 2],
     hitbox_id: Option<HitboxId>,
 }
@@ -132,29 +65,44 @@ impl Unit {
         self.max_health != 0.0
     }
 
+    fn kill(&mut self) {
+        self.max_health = 0.0;
+        self.buffs.clear();
+    }
+
     fn add_health(&mut self, amount: f64) {
         let max = self.max_health;
         clamped_add_assign(&mut self.health, amount, 0.0, max);
         if self.health == 0.0 {
-            self.max_health = 0.0;
+            self.kill()
         }
     }
 
+    fn find_buff_by_class(&self, class: Option<Class>) -> Option<usize> {
+        if class.is_none() {
+            return None;
+        }
+        for (i, buff) in self.buffs.iter().enumerate() {
+            if buff.class == class {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     fn add_buff(&mut self, buff: Buff) {
-        if let (Some(_), Some(ref mut old_buff)) =
-            (buff.class,
-             self.buffs.iter_mut().filter(|b| b.class == buff.class).next())
-        {
-            match (buff.timer, &mut old_buff.timer) {
+        if let Some(buff_i) = self.find_buff_by_class(buff.class) {
+            match (buff.timer, &mut self.buffs[buff_i].timer) {
                 (Some(timer), &mut Some(ref mut old_timer))
-                    if timer.remaining() > old_timer.remaining() => {
-                        old_timer.reset(timer.remaining());
-                    }
+                    if timer.remaining() > old_timer.remaining() =>
+                {
+                    old_timer.reset(timer.remaining());
+                }
                 _ => {}
             }
-            return;
+        } else {
+            self.buffs.push(buff);
         }
-        self.buffs.push(buff);
     }
 
     fn damage(&mut self, amount: f64) {
@@ -168,24 +116,37 @@ impl Unit {
 #[derive(Clone, Copy, Debug)]
 enum Target {
     Unit(UnitId),
-    LowestHealth(UnitId, usize),
+    LeastHealth(UnitId, usize),
 }
 
 impl Target {
-    fn apply<F: FnMut(&mut Unit)>(&self, units: &mut [Unit], mut callback: F) {
+    fn apply<P, G, F>(&self, units: &mut [Unit], priority: G, mut callback: F)
+        where G: Fn(&Unit) -> P,
+              F: FnMut(&mut Unit),
+              P: Ord,
+    {
         match *self {
             Target::Unit(unit_id) => {
                 callback(&mut units[unit_id]);
             }
-            Target::LowestHealth(unit_id, n) => {
+            Target::LeastHealth(unit_id, n) => {
                 callback(&mut units[unit_id]);
                 let mut finder: Vec<_> = units.iter().enumerate().map(
                     |(unit_id, unit)| {
-                        (unit.health / unit.max_health, unit_id)
+                        (
+                            (
+                                priority(unit),
+                                FloatOrd(unit.health /
+                                         (unit.max_health + EPSILON)),
+                            ),
+                            unit_id,
+                        )
                     }).collect();
-                finder.sort_by(|&(x, _), &(y, _)| x.partial_cmp(&y).unwrap());
+                finder.sort_by(|&(ref x, _), &(ref y, _)| {
+                    x.partial_cmp(&y).unwrap()
+                });
                 for &mut (_, unit_id) in finder.iter_mut().take(n) {
-                    callback(&mut units[unit_id]);
+                    callback(&mut units[unit_id])
                 }
             }
         }
@@ -214,14 +175,23 @@ impl Action {
     fn act(self, _: &Env, state: &mut State) {
         match self {
             Action::AddHealth { target, amount } => {
-                target.apply(&mut state.units, |unit| unit.add_health(amount));
+                target.apply(&mut state.units, |_| (), |unit| {
+                    unit.add_health(amount);
+                });
             }
             Action::AddMana { amount } => {
                 state.player.add_mana(amount);
             }
             Action::AddBuff { target, buff } => {
                 target.apply(&mut state.units, |unit| {
-                    unit.add_buff(buff.clone())
+                    unit.find_buff_by_class(buff.class).map(|buff_id| {
+                        FloatOrd(match unit.buffs[buff_id].timer {
+                            Some(timer) => timer.duration,
+                            None => INFINITY,
+                        })
+                    })
+                }, |unit| {
+                    unit.add_buff(buff.clone());
                 });
             }
         }
@@ -255,7 +225,7 @@ impl Effect {
             Effect::HealthRegen { rate } => {
                 queue.push(Action::AddHealth {
                     target: Target::Unit(unit_id),
-                    amount: rate * env.time_delta,
+                    amount: rate * env.clock.time_delta,
                 });
             }
         }
@@ -279,7 +249,7 @@ impl Buff {
             -> Result<(), ()> {
         self.effect.tick(env, unit_id, queue);
         match self.timer {
-            Some(ref mut timer) => timer.tick(env),
+            Some(ref mut timer) => timer.tick(&env.clock),
             None => Ok(()),
         }
     }
@@ -297,7 +267,7 @@ struct Player {
 impl Player {
     fn tick(&mut self, env: &Env, queue: &mut Vec<Action>) {
         if let Some((spell, mut progress)) = self.cast_spell.take() {
-            progress += env.time_delta;
+            progress += env.clock.time_delta;
             if progress < spell.cast_time {
                 self.cast_spell = Some((spell, progress));
             } else {
@@ -308,9 +278,9 @@ impl Player {
         }
 
         let mana_regen = self.mana_regen;
-        self.add_mana(mana_regen * env.time_delta);
+        self.add_mana(mana_regen * env.clock.time_delta);
 
-        let _ = self.gcd.tick(env);
+        let _ = self.gcd.tick(&env.clock);
     }
 
     fn draw(&self, c: Context, g: &mut G2d, _: &Env) {
@@ -451,13 +421,13 @@ struct Hitbox {
 const YELLOW: Color = [0.7, 0.6, 0.0, 1.0];
 const BLUE: Color = [0.0, 0.2, 0.9, 1.0];
 
-const BAR_PADDING: f64 = 20.0;
-const MANA_BAR_WIDTH: f64 = 400.0;
-const MANA_BAR_HEIGHT: f64 = 40.0;
-const CAST_BAR_WIDTH: f64 = 400.0;
-const CAST_BAR_HEIGHT: f64 = 40.0;
-const UNIT_BAR_WIDTH: f64 = 400.0;
-const UNIT_BAR_HEIGHT: f64 = 100.0;
+const BAR_PADDING: f64 = 10.0;
+const MANA_BAR_WIDTH: f64 = 300.0;
+const MANA_BAR_HEIGHT: f64 = 20.0;
+const CAST_BAR_WIDTH: f64 = 300.0;
+const CAST_BAR_HEIGHT: f64 = 20.0;
+const UNIT_BAR_WIDTH: f64 = 300.0;
+const UNIT_BAR_HEIGHT: f64 = 40.0;
 
 #[derive(Clone, Debug)]
 struct UnitBar {
@@ -495,6 +465,7 @@ impl UnitBar {
         Rectangle::new_border(WHITE, 1.0)
             .draw(self.rect, &draw_state, c.transform, g);
 
+        // draw buffs
         for (i, buff) in unit.buffs.iter().enumerate() {
             let ratio = if let Some(timer) = buff.timer {
                 timer.remaining() / timer.duration
@@ -592,7 +563,7 @@ fn handle_input<E>(env: &Env,
                 if let Some(unit_id) = env.selected() {
                     // Healing Prayer
                     state.player.cast(queue, Spell {
-                        cast_time: 2.5,
+                        cast_time: 3.0,
                         mana_cost: 4.0,
                         action: Action::AddHealth {
                             target: Target::LowestHealth(unit_id, 4),
@@ -609,10 +580,13 @@ fn handle_input<E>(env: &Env,
 }
 
 fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
+    // damaging aura
     for unit in &mut state.units {
-        unit.add_health(-1.0 * env.time_delta);
+        unit.add_health(-1.0 * env.clock.time_delta);
     }
-    let swing_now = state.boss_swing.tick(&env).is_err();
+
+    // boss attacks
+    let swing_now = state.boss_swing.tick(&env.clock).is_err();
     if swing_now {
         state.boss_swing.reset(rng.gen_range(1.5, 2.0));
         for unit in &mut state.units {
@@ -633,9 +607,8 @@ fn main() {
     let mut rng = rand::thread_rng();
 
     // game state
-    let mut prev_time = std::time::Instant::now();
     let mut env = Env {
-        time_delta: 0.0,
+        clock: Clock::new(),
         mouse_pos: [0.0, 0.0],
         hitbox_id: None,
     };
@@ -665,9 +638,7 @@ fn main() {
     }
 
     while let Some(e) = window.next() {
-        let now = std::time::Instant::now();
-        env.time_delta = duration_to_f64(now - prev_time);
-        prev_time = now;
+        env.clock.update();
         if let Some(pos) = e.mouse_cursor_args() {
             env.mouse_pos = pos;
         }
