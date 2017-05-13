@@ -1,0 +1,8 @@
+[package]
+name = "healsim"
+version = "0.1.0"
+authors = ["Fylwind Ruzkelt <fyl@wolfpa.ws>"]
+
+[dependencies]
+piston_window = "0.65.0"
+rand = "0.3.15"
