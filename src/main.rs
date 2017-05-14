@@ -11,6 +11,7 @@ use std::collections::{btree_map, BTreeMap};
 use std::f64::consts::PI;
 use std::f64::{EPSILON, INFINITY};
 use std::ops::{Add, Index};
+use std::path::Path;
 use std::sync::Arc;
 use float_ord::FloatOrd;
 use piston_window::*;
@@ -43,6 +44,7 @@ struct Env {
     clock: Clock,
     mouse_pos: [f64; 2],
     hitbox_id: Option<HitboxId>,
+    textures: Vec<G2dTexture>,
 }
 
 impl Env {
@@ -114,10 +116,8 @@ impl Action {
                     state,
                     |unit| {
                         // prefer refreshing buffs with least time remaining
-                        buff.class.group().and_then(|group| {
-                            unit.buffs.group(&group).map(|id| {
-                                FloatOrd(-unit.buffs.buff_progress(id, clock))
-                            })
+                        unit.buffs.find_class(&buff.class).map(|id| {
+                            FloatOrd(-unit.buffs.buff_progress(id, clock))
                         })
                     },
                     |unit_id, state| {
@@ -343,18 +343,28 @@ impl Buffs {
         self.buff_groups.get(group).cloned()
     }
 
-    fn buff_progress(&self, id: ActiveBuffId, clock: &Clock) -> f64 {
+    fn find_class(&self, class: &Class) -> Option<ActiveBuffId> {
+        class.group().and_then(|group| self.group(&group))
+    }
+
+    fn buff_duration(&self, id: ActiveBuffId) -> f64 {
+        let buff = &self[id].buff;
+        buff.interval * buff.num_ticks as f64
+    }
+
+    fn buff_remaining(&self, id: ActiveBuffId, clock: &Clock) -> f64 {
         let active_buff = &self[id];
-        let buff = &active_buff.buff;
-        let duration = buff.interval * buff.num_ticks as f64;
+        let when = self.watch[active_buff.timer].0;
+        active_buff.buff.interval * (active_buff.remaining_ticks - 1) as f64
+            + duration_to_f64(when - clock.time)
+    }
+
+    fn buff_progress(&self, id: ActiveBuffId, clock: &Clock) -> f64 {
+        let duration = self.buff_duration(id);
         if duration == INFINITY {
             return 0.0;
         }
-        let when = self.watch[active_buff.timer].0;
-        let remaining =
-            buff.interval * (active_buff.remaining_ticks - 1) as f64
-            + duration_to_f64(when - clock.time);
-        1.0 - remaining / duration
+        1.0 - self.buff_remaining(id, clock) / duration
     }
 
     fn start_unit_timer<P, F>(unit: &mut Unit, property: P,
@@ -489,10 +499,8 @@ impl Unit {
             return false;
         }
         if let Some((cooldown, _)) = spell.cooldown {
-            if let Some(group) = cooldown.group() {
-                if self.buffs.group(&group).is_some() {
-                    return false;
-                }
+            if self.buffs.find_class(&cooldown).is_some() {
+                return false;
             }
         }
         true
@@ -511,7 +519,6 @@ impl Unit {
 enum UnitEffect {
     Heal { amount: f64 },
     Damage { amount: f64 },
-//    AddMana { amount: f64 },
     Buff { buff: Box<Buff> },
 }
 
@@ -524,14 +531,11 @@ impl UnitEffect {
                 }
             }
             UnitEffect::Damage { amount } => {
-                let damage = amount * (-unit.armor).exp();
+                let damage = amount * (-unit.armor / 100.0).exp();
                 if damage > 0.0 {
                     unit.add_health(-damage);
                 }
             }
-            // UnitEffect::AddMana { amount } => {
-            //     unit.add_mana(amount);
-            // }
             UnitEffect::Buff { buff } => {
                 let buff = *buff;
                 unit.buffs.insert(buff, clock);
@@ -547,52 +551,17 @@ fn test_player() -> Unit {
         armor: 0.0,
         mana: 100.0,
         max_mana: 100.0,
-        mana_regen: 0.5,
-        gcd: 1.0,
+        mana_regen: 0.3,
+        gcd: 0.7,
         .. Default::default()
     }
-}
-
-fn draw_player(player: &Unit, env: &Env, c: Context, g: &mut G2d) {
-    let draw_state = DrawState::default();
-    let x = BAR_PADDING;
-    let y = BAR_PADDING;
-
-    if let Some(id) = player.global_cooldown {
-        let progress = player.buffs.buff_progress(id, &env.clock);
-        rectangle([1.0, 1.0, 1.0, 0.1], [
-            x,
-            y,
-            CAST_BAR_WIDTH * progress,
-            CAST_BAR_HEIGHT * 0.1,
-        ], c.transform, g);
-    }
-    if let Some(id) = player.casting {
-        let progress = player.buffs.buff_progress(id, &env.clock);
-        rectangle(YELLOW, [
-            x,
-            y,
-            CAST_BAR_WIDTH * progress,
-            CAST_BAR_HEIGHT,
-        ], c.transform, g);
-    }
-
-    let y = y + CAST_BAR_HEIGHT + BAR_PADDING;
-    rectangle(BLUE, [
-        x,
-        y,
-        MANA_BAR_WIDTH * player.mana / player.max_mana,
-        MANA_BAR_HEIGHT,
-    ], c.transform, g);
-    Rectangle::new_border(WHITE, 1.0)
-        .draw([x, y, MANA_BAR_WIDTH, MANA_BAR_HEIGHT],
-              &draw_state, c.transform, g);
 }
 
 #[derive(Clone, Debug)]
 struct State {
     player_unit_id: UnitId,
     units: Vec<Unit>,
+    interface: Interface,
     boss_multiplier: f64,
     boss_aura: Timer,
     boss_swing: Timer,
@@ -604,7 +573,7 @@ fn test_units() -> (UnitId, Vec<Unit>) {
         Unit {
             health: 150.0,
             max_health: 150.0,
-            armor: 1.0,
+            armor: 150.0,
             .. Default::default()
         },
     ];
@@ -616,9 +585,11 @@ fn test_units() -> (UnitId, Vec<Unit>) {
 
 fn test_state() -> State {
     let (player_unit_id, units) = test_units();
+    let interface = Interface::new(&units);
     State {
         player_unit_id,
         units,
+        interface,
         boss_multiplier: 1.0,
         boss_aura: Timer::from(2.0),
         boss_swing: Timer::from(2.0),
@@ -633,15 +604,6 @@ impl State {
 
     fn player_mut(&mut self) -> &mut Unit {
         &mut self.units[self.player_unit_id]
-    }
-}
-
-fn draw(c: Context, g: &mut G2d, env: &Env,
-        state: &State, unit_bars: &[UnitBar]) {
-    clear([0.0, 0.0, 0.0, 1.0], g);
-    draw_player(state.player(), env, c, g);
-    for unit_bar in unit_bars {
-        unit_bar.draw(c, g, env, &state.units);
     }
 }
 
@@ -673,6 +635,10 @@ const CAST_BAR_HEIGHT: f64 = 20.0;
 const UNIT_BAR_WIDTH: f64 = 300.0;
 const UNIT_BAR_HEIGHT: f64 = 40.0;
 
+const GREEN: Color = [0.0, 0.8, 0.0, 1.0];
+const LIGHT_GREEN: Color = [0.3, 1.0, 0.4, 1.0];
+const GREY: Color = [0.2, 0.2, 0.2, 1.0];
+
 #[derive(Clone, Debug)]
 struct UnitBar {
     unit_id: UnitId,
@@ -681,9 +647,6 @@ struct UnitBar {
 
 impl UnitBar {
     fn draw(&self, c: Context, g: &mut G2d, env: &Env, units: &[Unit]) {
-        const GREEN: Color = [0.0, 0.8, 0.0, 1.0];
-        const LIGHT_GREEN: Color = [0.3, 1.0, 0.4, 1.0];
-        const GREY: Color = [0.2, 0.2, 0.2, 1.0];
         let draw_state = DrawState::default();
 
         let unit = &units[self.unit_id];
@@ -734,6 +697,218 @@ impl UnitBar {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ActionButton {
+    texture_id: usize,
+    rect: [f64; 4],
+    cooldown: Option<Class>,
+}
+
+fn draw_cooldown_spiral(frac: f64, rect: [f64; 4], color: Color,
+                        draw_state: &DrawState, c: Context, g: &mut G2d) {
+    fn f(theta: f64) -> f64 {
+        0.5 * (2.0 * PI * theta).tan()
+    }
+    let mut poly = [[0.0, 0.0]; 7];
+    let mut n = 0;
+    if frac < 0.5 {
+        // workaround to ensure that polygon remains convex
+        poly[n] = [rect[0] + rect[2] * 0.5,
+                   rect[1] + rect[3]];
+        n += 1;
+        poly[n] = [rect[0] + rect[2] * 0.5,
+                   rect[1] + rect[3] * 0.5];
+        n += 1;
+        if frac < 1.0 / 8.0 || frac >= 7.0 / 8.0 {
+            poly[n] = [rect[0] + rect[2] * (0.5 + f(frac)),
+                       rect[1]];
+        } else if frac < 3.0 / 8.0 {
+            poly[n] = [rect[0] + rect[2],
+                       rect[1] + rect[3] * (0.5 + f(frac - 1.0 / 4.0))];
+        } else {
+            poly[n] = [rect[0] + rect[2] * (0.5 - f(frac - 2.0 / 4.0)),
+                       rect[1] + rect[3]];
+        }
+        n += 1;
+        if frac < 1.0 / 8.0 {
+            poly[n] = [rect[0] + rect[2],
+                       rect[1]];
+            n += 1;
+        }
+        if frac < 3.0 / 8.0 {
+            poly[n] = [rect[0] + rect[2],
+                       rect[1] + rect[3]];
+            n += 1;
+        }
+        Rectangle::new(color).draw([rect[0], rect[1], rect[2] / 2.0, rect[3]],
+                                   draw_state, c.transform, g);
+    } else {
+        poly[n] = [rect[0] + rect[2] * 0.5,
+                   rect[1]];
+        n += 1;
+        poly[n] = [rect[0] + rect[2] * 0.5,
+                   rect[1] + rect[3] * 0.5];
+        n += 1;
+        if frac < 5.0 / 8.0 {
+            poly[n] = [rect[0] + rect[2] * (0.5 - f(frac - 2.0 / 4.0)),
+                       rect[1] + rect[3]];
+        } else if frac < 7.0 / 8.0 {
+            poly[n] = [rect[0],
+                       rect[1] + rect[3] * (0.5 - f(frac - 3.0 / 4.0))];
+        } else {
+            poly[n] = [rect[0] + rect[2] * (0.5 + f(frac)),
+                       rect[1]];
+        }
+        n += 1;
+        if frac < 5.0 / 8.0 {
+            poly[n] = [rect[0],
+                       rect[1] + rect[3]];
+            n += 1;
+        }
+        if frac < 7.0 / 8.0 {
+            poly[n] = [rect[0],
+                       rect[1]];
+            n += 1;
+        }
+    }
+    Polygon::new(color).draw(&poly[0 .. n], draw_state, c.transform, g);
+}
+
+impl ActionButton {
+    fn draw(&self, pressed: bool, player: &Unit, env: &Env,
+            draw_state: &DrawState, c: Context, g: &mut G2d) {
+        Image::new()
+            .rect(self.rect)
+            .draw(&env.textures[self.texture_id],
+                  &draw_state, c.transform, g);
+        if pressed {
+            Rectangle::new([0.0, 0.0, 0.0, 0.4])
+                .draw(self.rect, &draw_state, c.transform, g);
+        }
+        let clock = &env.clock;
+        let mut remaining = 0.0;
+        let mut progress = 1.0;
+        if let Some(id) = player.global_cooldown {
+            remaining = player.buffs.buff_remaining(id, clock);
+            progress = player.buffs.buff_progress(id, clock);
+        };
+        if let Some(id) = self.cooldown.and_then(|cooldown| {
+            player.buffs.find_class(&cooldown)
+        }) {
+            let spell_remaining = player.buffs.buff_remaining(id, clock);
+            if spell_remaining > remaining {
+                progress = player.buffs.buff_progress(id, clock);
+            }
+        };
+        draw_cooldown_spiral(progress, self.rect, [0.0, 0.0, 0.0, 0.7],
+                             draw_state, c, g);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Interface {
+    unit_bars: Vec<UnitBar>,
+    buttons: Vec<ActionButton>,
+    pressed_button: Option<usize>,
+}
+
+impl Interface {
+    fn new(units: &[Unit]) -> Self {
+        let num_units_per_col = 5;
+        let unit_bars: Vec<_> = (0 .. units.len()).map(
+            |unit_id| {
+                let x = BAR_PADDING;
+                let y = CAST_BAR_HEIGHT + MANA_BAR_HEIGHT + BAR_PADDING * 3.0;
+                UnitBar {
+                    unit_id,
+                    rect: [
+                        x + ((unit_id / num_units_per_col) as f64
+                             * (UNIT_BAR_WIDTH + BAR_PADDING)),
+                        y + ((unit_id % num_units_per_col) as f64
+                             * (UNIT_BAR_HEIGHT + BAR_PADDING)),
+                        UNIT_BAR_WIDTH,
+                        UNIT_BAR_HEIGHT,
+                    ]
+                }
+            }).collect();
+
+        let button_size = 50.0;
+        let y =
+            CAST_BAR_HEIGHT
+            + MANA_BAR_HEIGHT
+            + BAR_PADDING * 8.0
+            + UNIT_BAR_HEIGHT * 5.0;
+        let mut rect = [BAR_PADDING, y, button_size, button_size];
+        let mut buttons = Vec::default();
+        buttons.push(ActionButton { texture_id: 0, rect, cooldown: Some(Class::SerenityCooldown)});
+        rect[0] += button_size + BAR_PADDING;
+        buttons.push(ActionButton { texture_id: 1, rect, cooldown: None });
+        rect[0] += button_size + BAR_PADDING;
+        buttons.push(ActionButton { texture_id: 2, rect, cooldown: None });
+
+        Self {
+            unit_bars,
+            buttons,
+            pressed_button: Default::default(),
+        }
+    }
+
+    fn draw(&self, env: &Env, state: &State, c: Context, g: &mut G2d) {
+        clear([0.0, 0.0, 0.0, 1.0], g);
+        for unit_bar in &self.unit_bars {
+            unit_bar.draw(c, g, env, &state.units);
+        }
+
+        let player = state.player();
+        let draw_state = DrawState::default();
+        let x = BAR_PADDING;
+        let y = BAR_PADDING;
+
+        if let Some(id) = player.global_cooldown {
+            let progress = player.buffs.buff_progress(id, &env.clock);
+            rectangle([1.0, 1.0, 1.0, 0.1], [
+                x,
+                y,
+                CAST_BAR_WIDTH * progress,
+                CAST_BAR_HEIGHT * 0.1,
+            ], c.transform, g);
+        }
+        if let Some(id) = player.casting {
+            let progress = player.buffs.buff_progress(id, &env.clock);
+            rectangle(YELLOW, [
+                x,
+                y,
+                CAST_BAR_WIDTH * progress,
+                CAST_BAR_HEIGHT,
+            ], c.transform, g);
+        }
+
+        let y = y + CAST_BAR_HEIGHT + BAR_PADDING;
+        rectangle(BLUE, [
+            x,
+            y,
+            MANA_BAR_WIDTH * player.mana / player.max_mana,
+            MANA_BAR_HEIGHT,
+        ], c.transform, g);
+        Rectangle::new_border(WHITE, 1.0)
+            .draw([x, y, MANA_BAR_WIDTH, MANA_BAR_HEIGHT],
+                  &draw_state, c.transform, g);
+
+        for (i, button) in self.buttons.iter().enumerate() {
+            let pressed = match self.pressed_button {
+                Some(j) if i == j => true,
+                _ => false
+            };
+            if player.is_alive() {
+                button.draw(pressed, player, env, &draw_state, c, g)
+            } else {
+                Rectangle::new(GREY)
+                    .draw(button.rect, &draw_state, c.transform, g);
+            }
+        }
+    }
+}
+
 fn get_current_hitbox(hitboxes: &[Hitbox], mouse_pos: [f64; 2])
                       -> Option<HitboxId> {
     let mut found = None;
@@ -768,49 +943,11 @@ fn handle_input<E>(env: &Env,
                 state.player_mut().stop_casting();
             }
             Button::Mouse(MouseButton::Left) => {
-                if let Some(unit_id) = env.selected() {
-                    // Serenity
-                    state.player_mut().cast(Spell {
-                        cast_time: 0.0,
-                        mana_cost: 0.8,
-                        cooldown: Some((Class::SerenityCooldown, 6.0)),
-                        action: Action::Effect {
-                            target: Target::LeastHealth(unit_id, 3),
-                            effect: Effect::UnitEffect(UnitEffect::Heal { amount: 75.0 }),
-                        },
-                    }, clock);
-                }
-            }
-            Button::Mouse(MouseButton::Right) => {
-                if let Some(unit_id) = env.selected() {
-                    // Revitalize
-                    state.player_mut().cast(Spell {
-                        cast_time: 0.0,
-                        mana_cost: 0.3,
-                        cooldown: None,
-                        action: Action::Effect {
-                            target: Target::LeastHealth(unit_id, 1),
-                            effect: Effect::UnitEffect(UnitEffect::Buff {
-                                buff: Box::new(Buff {
-                                    class: Class::Revitalize,
-                                    num_ticks: 4,
-                                    interval: 3.0,
-                                    effect: Some(Effect::UnitEffect(
-                                        UnitEffect::Heal {
-                                            amount: 8.0,
-                                        }
-                                    )),
-                                }),
-                            }),
-                        },
-                    }, clock);
-                }
-            }
-            Button::Mouse(MouseButton::Middle) => {
+                state.interface.pressed_button = Some(1);
                 if let Some(unit_id) = env.selected() {
                     // Healing Prayer
                     state.player_mut().cast(Spell {
-                        cast_time: 1.0,
+                        cast_time: 0.7,
                         mana_cost: 3.0,
                         cooldown: None,
                         action: Action::Effect {
@@ -820,21 +957,68 @@ fn handle_input<E>(env: &Env,
                     }, clock);
                 }
             }
+            Button::Mouse(MouseButton::Middle) => {
+                state.interface.pressed_button = Some(0);
+                if let Some(unit_id) = env.selected() {
+                    // Serenity
+                    state.player_mut().cast(Spell {
+                        cast_time: 0.0,
+                        mana_cost: 0.8,
+                        cooldown: Some((Class::SerenityCooldown, 2.0)),
+                        action: Action::Effect {
+                            target: Target::LeastHealth(unit_id, 5),
+                            effect: Effect::UnitEffect(UnitEffect::Heal { amount: 75.0 }),
+                        },
+                    }, clock);
+                }
+            }
+            Button::Mouse(MouseButton::Right) => {
+                state.interface.pressed_button = Some(2);
+                if let Some(unit_id) = env.selected() {
+                    // Revitalize
+                    state.player_mut().cast(Spell {
+                        cast_time: 0.0,
+                        mana_cost: 0.3,
+                        cooldown: None,
+                        action: Action::Effect {
+                            target: Target::LeastHealth(unit_id, 3),
+                            effect: Effect::UnitEffect(UnitEffect::Buff {
+                                buff: Box::new(Buff {
+                                    class: Class::Revitalize,
+                                    num_ticks: 4,
+                                    interval: 3.0,
+                                    effect: Some(Effect::UnitEffect(
+                                        UnitEffect::Heal {
+                                            amount: 30.0,
+                                        }
+                                    )),
+                                }),
+                            }),
+                        },
+                    }, clock);
+                }
+            }
             _ => {}
         }
     }
-    // if let Some(button) = e.release_args() {
-    // }
+    if let Some(button) = e.release_args() {
+        match button {
+            Button::Mouse(_) => {
+                state.interface.pressed_button = None;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
     // damaging aura
     if state.boss_aura.tick(&env.clock).is_err() {
-        state.boss_aura.reset(2.0);
+        state.boss_aura.reset(2.0 / state.boss_multiplier);
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
-                    amount: rng.gen_range(4.0, 6.5) * state.boss_multiplier,
+                    amount: rng.gen_range(4.0, 5.0) * state.boss_multiplier,
                 }.apply(&env.clock, unit);
             }
         }
@@ -842,11 +1026,11 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
 
     // boss attacks
     if state.boss_swing.tick(&env.clock).is_err(){
-        state.boss_swing.reset(rng.gen_range(1.4, 1.6) / state.boss_multiplier);
+        state.boss_swing.reset(2.0 / state.boss_multiplier);
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
-                    amount: rng.gen_range(60.0, 65.0) * state.boss_multiplier,
+                    amount: rng.gen_range(54.0, 56.0) * state.boss_multiplier,
                 }.apply(&env.clock, unit);
                 break;
             }
@@ -854,60 +1038,52 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
     }
 
     if state.boss_eruption.tick(&env.clock).is_err() {
-        state.boss_eruption.reset(rng.gen_range(5.5, 6.5) / state.boss_multiplier);
-        state.boss_multiplier += 0.0;
+        state.boss_eruption.reset(rng.gen_range(7.9, 8.1) / state.boss_multiplier);
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
-                    amount: rng.gen_range(24.0, 29.0) * state.boss_multiplier,
+                    amount: rng.gen_range(64.0, 66.0) * state.boss_multiplier,
                 }.apply(&env.clock, unit);
             }
         }
+        state.boss_multiplier += 0.05;
     }
 }
 
-fn main() {
-    let num_units_per_col = 5;
+fn get_image(window: &mut PistonWindow, name: &str) -> G2dTexture {
+    Texture::from_path(&mut window.factory,
+                       &Path::new("assets").join(Path::new(name)),
+                       Flip::None,
+                       &TextureSettings::new()).unwrap()
+}
 
+fn main() {
+    let mut rng = rand::thread_rng();
     let mut window: PistonWindow =
         WindowSettings::new("healsim", [640, 480])
         .build().unwrap();
-    let mut rng = rand::thread_rng();
 
     // game state
     let mut env = Env {
         clock: Clock::new(),
         mouse_pos: [0.0, 0.0],
         hitbox_id: None,
+        textures: vec![
+            get_image(&mut window, "icon1.png"),
+            get_image(&mut window, "icon3.png"),
+            get_image(&mut window, "icon2.png"),
+        ],
     };
     let mut queue = Vec::new();
     let mut hitboxes = Vec::new();
     let mut state = test_state();
 
-    let unit_bars: Vec<_> = (0 .. state.units.len()).map(
-        |unit_id| {
-            let x = BAR_PADDING;
-            let y = CAST_BAR_HEIGHT + MANA_BAR_HEIGHT + BAR_PADDING * 3.0;
-            UnitBar {
-                unit_id,
-                rect: [
-                    x + ((unit_id / num_units_per_col) as f64
-                         * (UNIT_BAR_WIDTH + BAR_PADDING)),
-                    y + ((unit_id % num_units_per_col) as f64
-                         * (UNIT_BAR_HEIGHT + BAR_PADDING)),
-                    UNIT_BAR_WIDTH,
-                    UNIT_BAR_HEIGHT,
-                ]
-            }
-        }).collect();
-
-    for unit_bar in &unit_bars {
+    for unit_bar in &state.interface.unit_bars {
         hitboxes.push(unit_bar.hitbox())
     }
 
     while let Some(e) = window.next() {
-
-        window.draw_2d(&e, |c, g| draw(c, g, &env, &state, &unit_bars));
+        window.draw_2d(&e, |c, g| state.interface.draw(&env, &state, c, g));
 
         env.clock.update();
         if let Some(pos) = e.mouse_cursor_args() {
