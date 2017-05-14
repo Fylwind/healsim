@@ -7,3 +7,4 @@ authors = ["Fylwind Ruzkelt <fyl@wolfpa.ws>"]
 float-ord = "0.1.1"
 piston_window = "0.65.0"
 rand = "0.3.15"
+vec-arena = "0.2.0"
