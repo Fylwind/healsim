@@ -1,5 +1,3 @@
-#![feature(binary_heap_peek_mut_pop)]
-
 extern crate float_ord;
 extern crate piston_window;
 extern crate rand;
@@ -103,7 +101,7 @@ impl Target {
 
 #[derive(Clone, Debug)]
 enum Action {
-    Boxed(NoDebug<Arc<Fn(&Clock, &mut State) -> Result<(), ()>>>),
+    Boxed(NoDebug<Arc<dyn Fn(&Clock, &mut State) -> Result<(), ()>>>),
     Effect { target: Target, effect: Effect },
 }
 
@@ -143,7 +141,7 @@ impl<T> std::fmt::Debug for NoDebug<T> {
 
 #[derive(Clone, Debug)]
 enum Effect {
-    Boxed(NoDebug<Arc<Fn(UnitId, &Clock, &mut State)>>),
+    Boxed(NoDebug<Arc<dyn Fn(UnitId, &Clock, &mut State)>>),
     UnitEffect(UnitEffect),
 }
 
