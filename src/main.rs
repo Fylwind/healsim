@@ -5,22 +5,23 @@ extern crate vec_arena;
 
 pub mod timing;
 
+use float_ord::FloatOrd;
+use piston_window::color::WHITE;
+use piston_window::types::Color;
+use piston_window::*;
 use std::collections::{btree_map, BTreeMap};
 use std::f64::consts::PI;
 use std::f64::{EPSILON, INFINITY};
 use std::ops::{Add, Index};
 use std::path::Path;
 use std::sync::Arc;
-use float_ord::FloatOrd;
-use piston_window::*;
-use piston_window::types::Color;
-use piston_window::color::WHITE;
 use timing::*;
 use vec_arena::Arena;
 
 fn clamped_add_assign<T>(lhs: &mut T, rhs: T, min: T, max: T)
-    where T: PartialOrd,
-          for<'a> &'a T: Add<Output=T>
+where
+    T: PartialOrd,
+    for<'a> &'a T: Add<Output = T>,
 {
     let sum = &*lhs + &rhs;
     if sum > max {
@@ -61,11 +62,11 @@ enum Target {
 }
 
 impl Target {
-    fn for_each<P, G, F>(&self, state: &mut State, priority: G, mut callback: F)
-                         -> Result<(), ()>
-        where G: Fn(&Unit) -> P,
-              F: FnMut(UnitId, &mut State),
-              P: Ord,
+    fn for_each<P, G, F>(&self, state: &mut State, priority: G, mut callback: F) -> Result<(), ()>
+    where
+        G: Fn(&Unit) -> P,
+        F: FnMut(UnitId, &mut State),
+        P: Ord,
     {
         match *self {
             Target::Single(unit_id) => {
@@ -80,16 +81,17 @@ impl Target {
                     return Err(());
                 }
                 callback(unit_id, state);
-                let mut finder: Vec<_> = state.units.iter().enumerate()
+                let mut finder: Vec<_> = state
+                    .units
+                    .iter()
+                    .enumerate()
                     .filter(|&(id, unit)| unit.is_alive() && id != unit_id)
                     .map(|(id, unit)| {
-                        let health_percent = FloatOrd(
-                            unit.health / (unit.max_health + EPSILON));
+                        let health_percent = FloatOrd(unit.health / (unit.max_health + EPSILON));
                         ((priority(unit), health_percent), id)
-                    }).collect();
-                finder.sort_by(|&(ref x, _), &(ref y, _)| {
-                    x.partial_cmp(&y).unwrap()
-                });
+                    })
+                    .collect();
+                finder.sort_by(|&(ref x, _), &(ref y, _)| x.partial_cmp(&y).unwrap());
                 for &(_, id) in finder.iter().take(n) {
                     callback(id, state)
                 }
@@ -114,17 +116,21 @@ impl Action {
                     state,
                     |unit| {
                         // prefer refreshing buffs with least time remaining
-                        unit.buffs.find_class(&buff.class).map(|id| {
-                            FloatOrd(-unit.buffs.buff_progress(id, clock))
-                        })
+                        unit.buffs
+                            .find_class(&buff.class)
+                            .map(|id| FloatOrd(-unit.buffs.buff_progress(id, clock)))
                     },
                     |unit_id, state| {
                         effect.clone().apply(unit_id, clock, state);
                     },
                 ),
-                _ => target.for_each(state, |_| (), |unit_id, state| {
-                    effect.clone().apply(unit_id, clock, state);
-                }),
+                _ => target.for_each(
+                    state,
+                    |_| (),
+                    |unit_id, state| {
+                        effect.clone().apply(unit_id, clock, state);
+                    },
+                ),
             },
         }
     }
@@ -170,12 +176,15 @@ impl Spell {
             self.action.clone().apply(clock, state)?;
             let unit = &mut state.units[unit_id];
             if let Some((class, duration)) = self.cooldown {
-                unit.buffs.insert(Buff {
-                    class: class,
-                    num_ticks: 1,
-                    interval: duration,
-                    effect: None,
-                }, clock);
+                unit.buffs.insert(
+                    Buff {
+                        class: class,
+                        num_ticks: 1,
+                        interval: duration,
+                        effect: None,
+                    },
+                    clock,
+                );
             }
             unit.add_mana(-self.mana_cost);
             Ok(())
@@ -188,7 +197,7 @@ impl Spell {
 // buffs within the same group are mutually exclusive
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Group {
-    Of(Class),                         // class is representative of the group
+    Of(Class), // class is representative of the group
 }
 
 // buffs within the same class are considered the "same"
@@ -242,8 +251,7 @@ struct Buffs {
 }
 
 impl Buffs {
-    fn update(&mut self, clock: &Clock, unit_id: UnitId,
-              queue: &mut Vec<Action>) {
+    fn update(&mut self, clock: &Clock, unit_id: UnitId, queue: &mut Vec<Action>) {
         while let Some((_, id)) = self.watch.poll(clock.time).next() {
             {
                 let active_buff = &mut self.buffs[id.0];
@@ -274,7 +282,7 @@ impl Buffs {
     fn insert(&mut self, mut buff: Buff, clock: &Clock) -> ActiveBuffId {
         fn raw_insert(buffs: &mut Arena<ActiveBuff>, buff: Buff) -> ActiveBuffId {
             ActiveBuffId(buffs.insert(ActiveBuff {
-                timer: WatchTimer(!0),       // dummy
+                timer: WatchTimer(!0), // dummy
                 remaining_ticks: buff.num_ticks,
                 buff: buff,
             }))
@@ -293,9 +301,12 @@ impl Buffs {
                         if visible {
                             self.visible_buffs.push(id);
                         }
-                        clamped_add_assign(&mut active_buff.remaining_ticks,
-                                           buff.num_ticks,
-                                           0, buff.num_ticks * 13 / 10);
+                        clamped_add_assign(
+                            &mut active_buff.remaining_ticks,
+                            buff.num_ticks,
+                            0,
+                            buff.num_ticks * 13 / 10,
+                        );
                         buff.num_ticks = active_buff.remaining_ticks;
                         active_buff.buff = buff;
                         return id;
@@ -305,7 +316,7 @@ impl Buffs {
                         active_buff.buff = buff;
                         id
                     }
-                },
+                }
                 btree_map::Entry::Vacant(entry) => {
                     let id = raw_insert(&mut self.buffs, buff);
                     entry.insert(id);
@@ -365,22 +376,31 @@ impl Buffs {
         1.0 - self.buff_remaining(id, clock) / duration
     }
 
-    fn start_unit_timer<P, F>(unit: &mut Unit, property: P,
-                              duration: f64, clock: &Clock, callback: F)
-        where P: Fn(&mut Unit) -> (&mut Buffs, &mut Option<ActiveBuffId>)
-                 + 'static,
-              F: Fn(UnitId, &Clock, &mut State) + 'static,
+    fn start_unit_timer<P, F>(
+        unit: &mut Unit,
+        property: P,
+        duration: f64,
+        clock: &Clock,
+        callback: F,
+    ) where
+        P: Fn(&mut Unit) -> (&mut Buffs, &mut Option<ActiveBuffId>) + 'static,
+        F: Fn(UnitId, &Clock, &mut State) + 'static,
     {
         let (buffs, timer) = property(unit);
-        *timer = Some(buffs.insert(Buff {
-            class: Class::Special,
-            num_ticks: 1,
-            interval: duration,
-            effect: Some(Effect::Boxed(NoDebug(Arc::new(move |unit_id, clock, state| {
-                *property(&mut state.units[unit_id]).1 = None;
-                callback(unit_id, clock, state);
-            })))),
-        }, clock))
+        *timer = Some(buffs.insert(
+            Buff {
+                class: Class::Special,
+                num_ticks: 1,
+                interval: duration,
+                effect: Some(Effect::Boxed(NoDebug(Arc::new(
+                    move |unit_id, clock, state| {
+                        *property(&mut state.units[unit_id]).1 = None;
+                        callback(unit_id, clock, state);
+                    },
+                )))),
+            },
+            clock,
+        ))
     }
 
     fn reset_unit_timer(&mut self, timer: &mut Option<ActiveBuffId>) {
@@ -466,10 +486,7 @@ impl Unit {
     }
 
     fn cast(&mut self, spell: Spell, clock: &Clock) {
-        if self.is_casting()
-            || self.global_cooldown.is_some()
-            || !self.can_cast(&spell)
-        {
+        if self.is_casting() || self.global_cooldown.is_some() || !self.can_cast(&spell) {
             return;
         }
         Buffs::start_unit_timer(
@@ -482,14 +499,16 @@ impl Unit {
                     // FIXME redundant?
                     let _ = spell.clone().cast_action(unit_id).apply(clock, state);
                 }
-            });
+            },
+        );
         let gcd = self.gcd;
         Buffs::start_unit_timer(
             self,
             |unit| (&mut unit.buffs, &mut unit.global_cooldown),
             gcd,
             clock,
-            |_, _, _| ());
+            |_, _, _| (),
+        );
     }
 
     fn can_cast(&self, spell: &Spell) -> bool {
@@ -551,7 +570,7 @@ fn test_player() -> Unit {
         max_mana: 100.0,
         mana_regen: 0.3,
         gcd: 0.7,
-        .. Default::default()
+        ..Default::default()
     }
 }
 
@@ -567,14 +586,12 @@ struct State {
 }
 
 fn test_units() -> (UnitId, Vec<Unit>) {
-    let mut units = vec![
-        Unit {
-            health: 150.0,
-            max_health: 150.0,
-            armor: 150.0,
-            .. Default::default()
-        },
-    ];
+    let mut units = vec![Unit {
+        health: 150.0,
+        max_health: 150.0,
+        armor: 150.0,
+        ..Default::default()
+    }];
     units.extend(vec![Default::default(); 8]);
     let player_unit_id = units.len();
     units.push(test_player());
@@ -651,38 +668,47 @@ impl UnitBar {
 
         let (color, ratio) = if unit.is_alive() {
             let color = match env.hitbox_id {
-                Some(HitboxId::UnitBar(id)) if id == self.unit_id => {
-                    LIGHT_GREEN
-                }
-                _ => { GREEN }
+                Some(HitboxId::UnitBar(id)) if id == self.unit_id => LIGHT_GREEN,
+                _ => GREEN,
             };
             (color, unit.health / unit.max_health)
         } else {
             (GREY, 1.0)
         };
-        rectangle(color, [
-            self.rect[0],
-            self.rect[1],
-            self.rect[2] * ratio,
-            self.rect[3],
-        ], c.transform, g);
+        rectangle(
+            color,
+            [
+                self.rect[0],
+                self.rect[1],
+                self.rect[2] * ratio,
+                self.rect[3],
+            ],
+            c.transform,
+            g,
+        );
 
-        Rectangle::new_border(WHITE, 1.0)
-            .draw(self.rect, &draw_state, c.transform, g);
+        Rectangle::new_border(WHITE, 1.0).draw(self.rect, &draw_state, c.transform, g);
 
         // draw buffs
         for (i, &id) in unit.buffs.visible_buffs.iter().enumerate() {
             let progress = unit.buffs.buff_progress(id, &env.clock);
-            CircleArc::new([0.9, 0.0, 0.8, 1.0],
-                           5.0,
-                           2.0 * PI * (progress - 0.25),
-                           2.0 * PI * -0.25)
-                .draw([
+            CircleArc::new(
+                [0.9, 0.0, 0.8, 1.0],
+                5.0,
+                2.0 * PI * (progress - 0.25),
+                2.0 * PI * -0.25,
+            )
+            .draw(
+                [
                     self.rect[0] + self.rect[2] - 10.0 - (i + 1) as f64 * 20.0,
                     self.rect[1] + 10.0,
                     20.0,
                     20.0,
-                ], &draw_state, c.transform, g);
+                ],
+                &draw_state,
+                c.transform,
+                g,
+            );
         }
     }
 
@@ -702,8 +728,14 @@ struct ActionButton {
     cooldown: Option<Class>,
 }
 
-fn draw_cooldown_spiral(frac: f64, rect: [f64; 4], color: Color,
-                        draw_state: &DrawState, c: Context, g: &mut G2d) {
+fn draw_cooldown_spiral(
+    frac: f64,
+    rect: [f64; 4],
+    color: Color,
+    draw_state: &DrawState,
+    c: Context,
+    g: &mut G2d,
+) {
     fn f(theta: f64) -> f64 {
         0.5 * (2.0 * PI * theta).tan()
     }
@@ -711,77 +743,84 @@ fn draw_cooldown_spiral(frac: f64, rect: [f64; 4], color: Color,
     let mut n = 0;
     if frac < 0.5 {
         // workaround to ensure that polygon remains convex
-        poly[n] = [rect[0] + rect[2] * 0.5,
-                   rect[1] + rect[3]];
+        poly[n] = [rect[0] + rect[2] * 0.5, rect[1] + rect[3]];
         n += 1;
-        poly[n] = [rect[0] + rect[2] * 0.5,
-                   rect[1] + rect[3] * 0.5];
+        poly[n] = [rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5];
         n += 1;
         if frac < 1.0 / 8.0 || frac >= 7.0 / 8.0 {
-            poly[n] = [rect[0] + rect[2] * (0.5 + f(frac)),
-                       rect[1]];
+            poly[n] = [rect[0] + rect[2] * (0.5 + f(frac)), rect[1]];
         } else if frac < 3.0 / 8.0 {
-            poly[n] = [rect[0] + rect[2],
-                       rect[1] + rect[3] * (0.5 + f(frac - 1.0 / 4.0))];
+            poly[n] = [
+                rect[0] + rect[2],
+                rect[1] + rect[3] * (0.5 + f(frac - 1.0 / 4.0)),
+            ];
         } else {
-            poly[n] = [rect[0] + rect[2] * (0.5 - f(frac - 2.0 / 4.0)),
-                       rect[1] + rect[3]];
+            poly[n] = [
+                rect[0] + rect[2] * (0.5 - f(frac - 2.0 / 4.0)),
+                rect[1] + rect[3],
+            ];
         }
         n += 1;
         if frac < 1.0 / 8.0 {
-            poly[n] = [rect[0] + rect[2],
-                       rect[1]];
+            poly[n] = [rect[0] + rect[2], rect[1]];
             n += 1;
         }
         if frac < 3.0 / 8.0 {
-            poly[n] = [rect[0] + rect[2],
-                       rect[1] + rect[3]];
+            poly[n] = [rect[0] + rect[2], rect[1] + rect[3]];
             n += 1;
         }
-        Rectangle::new(color).draw([rect[0], rect[1], rect[2] / 2.0, rect[3]],
-                                   draw_state, c.transform, g);
+        Rectangle::new(color).draw(
+            [rect[0], rect[1], rect[2] / 2.0, rect[3]],
+            draw_state,
+            c.transform,
+            g,
+        );
     } else {
-        poly[n] = [rect[0] + rect[2] * 0.5,
-                   rect[1]];
+        poly[n] = [rect[0] + rect[2] * 0.5, rect[1]];
         n += 1;
-        poly[n] = [rect[0] + rect[2] * 0.5,
-                   rect[1] + rect[3] * 0.5];
+        poly[n] = [rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5];
         n += 1;
         if frac < 5.0 / 8.0 {
-            poly[n] = [rect[0] + rect[2] * (0.5 - f(frac - 2.0 / 4.0)),
-                       rect[1] + rect[3]];
+            poly[n] = [
+                rect[0] + rect[2] * (0.5 - f(frac - 2.0 / 4.0)),
+                rect[1] + rect[3],
+            ];
         } else if frac < 7.0 / 8.0 {
-            poly[n] = [rect[0],
-                       rect[1] + rect[3] * (0.5 - f(frac - 3.0 / 4.0))];
+            poly[n] = [rect[0], rect[1] + rect[3] * (0.5 - f(frac - 3.0 / 4.0))];
         } else {
-            poly[n] = [rect[0] + rect[2] * (0.5 + f(frac)),
-                       rect[1]];
+            poly[n] = [rect[0] + rect[2] * (0.5 + f(frac)), rect[1]];
         }
         n += 1;
         if frac < 5.0 / 8.0 {
-            poly[n] = [rect[0],
-                       rect[1] + rect[3]];
+            poly[n] = [rect[0], rect[1] + rect[3]];
             n += 1;
         }
         if frac < 7.0 / 8.0 {
-            poly[n] = [rect[0],
-                       rect[1]];
+            poly[n] = [rect[0], rect[1]];
             n += 1;
         }
     }
-    Polygon::new(color).draw(&poly[0 .. n], draw_state, c.transform, g);
+    Polygon::new(color).draw(&poly[0..n], draw_state, c.transform, g);
 }
 
 impl ActionButton {
-    fn draw(&self, pressed: bool, player: &Unit, env: &Env,
-            draw_state: &DrawState, c: Context, g: &mut G2d) {
-        Image::new()
-            .rect(self.rect)
-            .draw(&env.textures[self.texture_id],
-                  &draw_state, c.transform, g);
+    fn draw(
+        &self,
+        pressed: bool,
+        player: &Unit,
+        env: &Env,
+        draw_state: &DrawState,
+        c: Context,
+        g: &mut G2d,
+    ) {
+        Image::new().rect(self.rect).draw(
+            &env.textures[self.texture_id],
+            &draw_state,
+            c.transform,
+            g,
+        );
         if pressed {
-            Rectangle::new([0.0, 0.0, 0.0, 0.4])
-                .draw(self.rect, &draw_state, c.transform, g);
+            Rectangle::new([0.0, 0.0, 0.0, 0.4]).draw(self.rect, &draw_state, c.transform, g);
         }
         let clock = &env.clock;
         let mut remaining = 0.0;
@@ -790,16 +829,16 @@ impl ActionButton {
             remaining = player.buffs.buff_remaining(id, clock);
             progress = player.buffs.buff_progress(id, clock);
         };
-        if let Some(id) = self.cooldown.and_then(|cooldown| {
-            player.buffs.find_class(&cooldown)
-        }) {
+        if let Some(id) = self
+            .cooldown
+            .and_then(|cooldown| player.buffs.find_class(&cooldown))
+        {
             let spell_remaining = player.buffs.buff_remaining(id, clock);
             if spell_remaining > remaining {
                 progress = player.buffs.buff_progress(id, clock);
             }
         };
-        draw_cooldown_spiral(progress, self.rect, [0.0, 0.0, 0.0, 0.7],
-                             draw_state, c, g);
+        draw_cooldown_spiral(progress, self.rect, [0.0, 0.0, 0.0, 0.7], draw_state, c, g);
     }
 }
 
@@ -813,36 +852,44 @@ struct Interface {
 impl Interface {
     fn new(units: &[Unit]) -> Self {
         let num_units_per_col = 5;
-        let unit_bars: Vec<_> = (0 .. units.len()).map(
-            |unit_id| {
+        let unit_bars: Vec<_> = (0..units.len())
+            .map(|unit_id| {
                 let x = BAR_PADDING;
                 let y = CAST_BAR_HEIGHT + MANA_BAR_HEIGHT + BAR_PADDING * 3.0;
                 UnitBar {
                     unit_id,
                     rect: [
-                        x + ((unit_id / num_units_per_col) as f64
-                             * (UNIT_BAR_WIDTH + BAR_PADDING)),
+                        x + ((unit_id / num_units_per_col) as f64 * (UNIT_BAR_WIDTH + BAR_PADDING)),
                         y + ((unit_id % num_units_per_col) as f64
-                             * (UNIT_BAR_HEIGHT + BAR_PADDING)),
+                            * (UNIT_BAR_HEIGHT + BAR_PADDING)),
                         UNIT_BAR_WIDTH,
                         UNIT_BAR_HEIGHT,
-                    ]
+                    ],
                 }
-            }).collect();
+            })
+            .collect();
 
         let button_size = 50.0;
-        let y =
-            CAST_BAR_HEIGHT
-            + MANA_BAR_HEIGHT
-            + BAR_PADDING * 8.0
-            + UNIT_BAR_HEIGHT * 5.0;
+        let y = CAST_BAR_HEIGHT + MANA_BAR_HEIGHT + BAR_PADDING * 8.0 + UNIT_BAR_HEIGHT * 5.0;
         let mut rect = [BAR_PADDING, y, button_size, button_size];
         let mut buttons = Vec::default();
-        buttons.push(ActionButton { texture_id: 0, rect, cooldown: Some(Class::SerenityCooldown)});
+        buttons.push(ActionButton {
+            texture_id: 0,
+            rect,
+            cooldown: Some(Class::SerenityCooldown),
+        });
         rect[0] += button_size + BAR_PADDING;
-        buttons.push(ActionButton { texture_id: 1, rect, cooldown: None });
+        buttons.push(ActionButton {
+            texture_id: 1,
+            rect,
+            cooldown: None,
+        });
         rect[0] += button_size + BAR_PADDING;
-        buttons.push(ActionButton { texture_id: 2, rect, cooldown: None });
+        buttons.push(ActionButton {
+            texture_id: 2,
+            rect,
+            cooldown: None,
+        });
 
         Self {
             unit_bars,
@@ -864,58 +911,63 @@ impl Interface {
 
         if let Some(id) = player.global_cooldown {
             let progress = player.buffs.buff_progress(id, &env.clock);
-            rectangle([1.0, 1.0, 1.0, 0.1], [
-                x,
-                y,
-                CAST_BAR_WIDTH * progress,
-                CAST_BAR_HEIGHT * 0.1,
-            ], c.transform, g);
+            rectangle(
+                [1.0, 1.0, 1.0, 0.1],
+                [x, y, CAST_BAR_WIDTH * progress, CAST_BAR_HEIGHT * 0.1],
+                c.transform,
+                g,
+            );
         }
         if let Some(id) = player.casting {
             let progress = player.buffs.buff_progress(id, &env.clock);
-            rectangle(YELLOW, [
-                x,
-                y,
-                CAST_BAR_WIDTH * progress,
-                CAST_BAR_HEIGHT,
-            ], c.transform, g);
+            rectangle(
+                YELLOW,
+                [x, y, CAST_BAR_WIDTH * progress, CAST_BAR_HEIGHT],
+                c.transform,
+                g,
+            );
         }
 
         let y = y + CAST_BAR_HEIGHT + BAR_PADDING;
-        rectangle(BLUE, [
-            x,
-            y,
-            MANA_BAR_WIDTH * player.mana / player.max_mana,
-            MANA_BAR_HEIGHT,
-        ], c.transform, g);
-        Rectangle::new_border(WHITE, 1.0)
-            .draw([x, y, MANA_BAR_WIDTH, MANA_BAR_HEIGHT],
-                  &draw_state, c.transform, g);
+        rectangle(
+            BLUE,
+            [
+                x,
+                y,
+                MANA_BAR_WIDTH * player.mana / player.max_mana,
+                MANA_BAR_HEIGHT,
+            ],
+            c.transform,
+            g,
+        );
+        Rectangle::new_border(WHITE, 1.0).draw(
+            [x, y, MANA_BAR_WIDTH, MANA_BAR_HEIGHT],
+            &draw_state,
+            c.transform,
+            g,
+        );
 
         for (i, button) in self.buttons.iter().enumerate() {
             let pressed = match self.pressed_button {
                 Some(j) if i == j => true,
-                _ => false
+                _ => false,
             };
             if player.is_alive() {
                 button.draw(pressed, player, env, &draw_state, c, g)
             } else {
-                Rectangle::new(GREY)
-                    .draw(button.rect, &draw_state, c.transform, g);
+                Rectangle::new(GREY).draw(button.rect, &draw_state, c.transform, g);
             }
         }
     }
 }
 
-fn get_current_hitbox(hitboxes: &[Hitbox], mouse_pos: [f64; 2])
-                      -> Option<HitboxId> {
+fn get_current_hitbox(hitboxes: &[Hitbox], mouse_pos: [f64; 2]) -> Option<HitboxId> {
     let mut found = None;
     for hitbox in hitboxes {
-        if
-            mouse_pos[0] >= hitbox.rect[0] &&
-            mouse_pos[1] >= hitbox.rect[1] &&
-            mouse_pos[0] < hitbox.rect[0] + hitbox.rect[2] &&
-            mouse_pos[1] < hitbox.rect[1] + hitbox.rect[3]
+        if mouse_pos[0] >= hitbox.rect[0]
+            && mouse_pos[1] >= hitbox.rect[1]
+            && mouse_pos[0] < hitbox.rect[0] + hitbox.rect[2]
+            && mouse_pos[1] < hitbox.rect[1] + hitbox.rect[3]
         {
             match found {
                 Some((_, layer)) if layer > hitbox.layer => {
@@ -929,10 +981,9 @@ fn get_current_hitbox(hitboxes: &[Hitbox], mouse_pos: [f64; 2])
     found.map(|(id, _)| id)
 }
 
-fn handle_input<E>(env: &Env,
-                   state: &mut State,
-                   e: &E)
-    where E: PressEvent + ReleaseEvent
+fn handle_input<E>(env: &Env, state: &mut State, e: &E)
+where
+    E: PressEvent + ReleaseEvent,
 {
     let clock = &env.clock;
     if let Some(button) = e.press_args() {
@@ -944,56 +995,63 @@ fn handle_input<E>(env: &Env,
                 state.interface.pressed_button = Some(1);
                 if let Some(unit_id) = env.selected() {
                     // Healing Prayer
-                    state.player_mut().cast(Spell {
-                        cast_time: 0.7,
-                        mana_cost: 3.0,
-                        cooldown: None,
-                        action: Action::Effect {
-                            target: Target::LeastHealth(unit_id, 5),
-                            effect: Effect::UnitEffect(UnitEffect::Heal { amount: 30.0 }),
+                    state.player_mut().cast(
+                        Spell {
+                            cast_time: 0.7,
+                            mana_cost: 3.0,
+                            cooldown: None,
+                            action: Action::Effect {
+                                target: Target::LeastHealth(unit_id, 5),
+                                effect: Effect::UnitEffect(UnitEffect::Heal { amount: 30.0 }),
+                            },
                         },
-                    }, clock);
+                        clock,
+                    );
                 }
             }
             Button::Mouse(MouseButton::Middle) => {
                 state.interface.pressed_button = Some(0);
                 if let Some(unit_id) = env.selected() {
                     // Serenity
-                    state.player_mut().cast(Spell {
-                        cast_time: 0.0,
-                        mana_cost: 0.8,
-                        cooldown: Some((Class::SerenityCooldown, 2.0)),
-                        action: Action::Effect {
-                            target: Target::LeastHealth(unit_id, 5),
-                            effect: Effect::UnitEffect(UnitEffect::Heal { amount: 75.0 }),
+                    state.player_mut().cast(
+                        Spell {
+                            cast_time: 0.0,
+                            mana_cost: 0.8,
+                            cooldown: Some((Class::SerenityCooldown, 2.0)),
+                            action: Action::Effect {
+                                target: Target::LeastHealth(unit_id, 5),
+                                effect: Effect::UnitEffect(UnitEffect::Heal { amount: 75.0 }),
+                            },
                         },
-                    }, clock);
+                        clock,
+                    );
                 }
             }
             Button::Mouse(MouseButton::Right) => {
                 state.interface.pressed_button = Some(2);
                 if let Some(unit_id) = env.selected() {
                     // Revitalize
-                    state.player_mut().cast(Spell {
-                        cast_time: 0.0,
-                        mana_cost: 0.3,
-                        cooldown: None,
-                        action: Action::Effect {
-                            target: Target::LeastHealth(unit_id, 3),
-                            effect: Effect::UnitEffect(UnitEffect::Buff {
-                                buff: Box::new(Buff {
-                                    class: Class::Revitalize,
-                                    num_ticks: 4,
-                                    interval: 3.0,
-                                    effect: Some(Effect::UnitEffect(
-                                        UnitEffect::Heal {
+                    state.player_mut().cast(
+                        Spell {
+                            cast_time: 0.0,
+                            mana_cost: 0.3,
+                            cooldown: None,
+                            action: Action::Effect {
+                                target: Target::LeastHealth(unit_id, 3),
+                                effect: Effect::UnitEffect(UnitEffect::Buff {
+                                    buff: Box::new(Buff {
+                                        class: Class::Revitalize,
+                                        num_ticks: 4,
+                                        interval: 3.0,
+                                        effect: Some(Effect::UnitEffect(UnitEffect::Heal {
                                             amount: 30.0,
-                                        }
-                                    )),
+                                        })),
+                                    }),
                                 }),
-                            }),
+                            },
                         },
-                    }, clock);
+                        clock,
+                    );
                 }
             }
             _ => {}
@@ -1017,31 +1075,36 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
             if unit.is_alive() {
                 UnitEffect::Damage {
                     amount: rng.gen_range(4.0, 5.0) * state.boss_multiplier,
-                }.apply(&env.clock, unit);
+                }
+                .apply(&env.clock, unit);
             }
         }
     }
 
     // boss attacks
-    if state.boss_swing.tick(&env.clock).is_err(){
+    if state.boss_swing.tick(&env.clock).is_err() {
         state.boss_swing.reset(2.0 / state.boss_multiplier);
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
                     amount: rng.gen_range(54.0, 56.0) * state.boss_multiplier,
-                }.apply(&env.clock, unit);
+                }
+                .apply(&env.clock, unit);
                 break;
             }
         }
     }
 
     if state.boss_eruption.tick(&env.clock).is_err() {
-        state.boss_eruption.reset(rng.gen_range(7.9, 8.1) / state.boss_multiplier);
+        state
+            .boss_eruption
+            .reset(rng.gen_range(7.9, 8.1) / state.boss_multiplier);
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
                     amount: rng.gen_range(64.0, 66.0) * state.boss_multiplier,
-                }.apply(&env.clock, unit);
+                }
+                .apply(&env.clock, unit);
             }
         }
         state.boss_multiplier += 0.05;
@@ -1049,17 +1112,18 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
 }
 
 fn get_image(window: &mut PistonWindow, name: &str) -> G2dTexture {
-    Texture::from_path(&mut window.factory,
-                       &Path::new("assets").join(Path::new(name)),
-                       Flip::None,
-                       &TextureSettings::new()).unwrap()
+    Texture::from_path(
+        &mut window.factory,
+        &Path::new("assets").join(Path::new(name)),
+        Flip::None,
+        &TextureSettings::new(),
+    )
+    .unwrap()
 }
 
 fn main() {
     let mut rng = rand::thread_rng();
-    let mut window: PistonWindow =
-        WindowSettings::new("healsim", [640, 480])
-        .build().unwrap();
+    let mut window: PistonWindow = WindowSettings::new("healsim", [640, 480]).build().unwrap();
 
     // game state
     let mut env = Env {
