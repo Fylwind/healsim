@@ -2,9 +2,10 @@
 name = "healsim"
 version = "0.1.0"
 authors = ["Fylwind Ruzkelt <fyl@wolfpa.ws>"]
+edition = "2024"
 
 [dependencies]
-float-ord = "0.1.1"
-piston_window = "0.65.0"
-rand = "0.3.15"
-vec-arena = "0.2.0"
+float-ord = "0.3.2"
+piston_window = "0.132.0"
+rand = "0.9.1"
+slab = "0.4.9"

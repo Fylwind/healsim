@@ -1,8 +1,8 @@
-use std::{cmp, mem};
+use slab::Slab;
+use std::collections::{binary_heap, BinaryHeap};
 use std::ops::{Add, Index};
 use std::time::{Duration, Instant};
-use std::collections::{binary_heap, BinaryHeap};
-use vec_arena::Arena;
+use std::{cmp, mem};
 
 pub fn duration_to_f64(t: Duration) -> f64 {
     t.as_secs() as f64 + 1e-9 * t.subsec_nanos() as f64
@@ -145,7 +145,7 @@ impl Ord for WatchItem {
 pub struct Watch<T> {
     queue: BinaryHeap<WatchItem>,
     // the arena uses None as tombstones for canceled timers
-    arena: Arena<Option<(Instant, T)>>,
+    arena: Slab<Option<(Instant, T)>>,
 }
 
 impl<T> Default for Watch<T> {
@@ -198,8 +198,7 @@ impl<'a, T> Iterator for WatchPoll<'a, T> {
                 break;
             }
             let timer = binary_heap::PeekMut::pop(top).timer.0;
-            let data = self.watch.arena.remove(timer)
-                .expect("can't find queued item in arena!?");
+            let data = self.watch.arena.remove(timer);
             if data.is_some() {
                 return data;
             }

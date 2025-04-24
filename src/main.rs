@@ -1,7 +1,7 @@
 extern crate float_ord;
 extern crate piston_window;
 extern crate rand;
-extern crate vec_arena;
+extern crate slab;
 
 pub mod timing;
 
@@ -9,6 +9,7 @@ use float_ord::FloatOrd;
 use piston_window::color::WHITE;
 use piston_window::types::Color;
 use piston_window::*;
+use slab::Slab;
 use std::collections::{btree_map, BTreeMap};
 use std::f64::consts::PI;
 use std::f64::{EPSILON, INFINITY};
@@ -16,7 +17,6 @@ use std::ops::{Add, Index};
 use std::path::Path;
 use std::sync::Arc;
 use timing::*;
-use vec_arena::Arena;
 
 fn clamped_add_assign<T>(lhs: &mut T, rhs: T, min: T, max: T)
 where
@@ -245,7 +245,7 @@ struct ActiveBuff {
 #[derive(Clone, Debug, Default)]
 struct Buffs {
     watch: Watch<ActiveBuffId>,
-    buffs: Arena<ActiveBuff>,
+    buffs: Slab<ActiveBuff>,
     buff_groups: BTreeMap<Group, ActiveBuffId>,
     visible_buffs: Vec<ActiveBuffId>,
 }
@@ -269,7 +269,7 @@ impl Buffs {
                     continue;
                 }
             }
-            let active_buff = self.buffs.remove(id.0).unwrap();
+            let active_buff = self.buffs.remove(id.0);
             if let Some(group) = active_buff.buff.class.group() {
                 self.buff_groups.remove(&group);
             }
@@ -280,7 +280,7 @@ impl Buffs {
     }
 
     fn insert(&mut self, mut buff: Buff, clock: &Clock) -> ActiveBuffId {
-        fn raw_insert(buffs: &mut Arena<ActiveBuff>, buff: Buff) -> ActiveBuffId {
+        fn raw_insert(buffs: &mut Slab<ActiveBuff>, buff: Buff) -> ActiveBuffId {
             ActiveBuffId(buffs.insert(ActiveBuff {
                 timer: WatchTimer(!0), // dummy
                 remaining_ticks: buff.num_ticks,
@@ -1074,7 +1074,7 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
-                    amount: rng.gen_range(4.0, 5.0) * state.boss_multiplier,
+                    amount: rng.random_range(4.0..5.0) * state.boss_multiplier,
                 }
                 .apply(&env.clock, unit);
             }
@@ -1087,7 +1087,7 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
-                    amount: rng.gen_range(54.0, 56.0) * state.boss_multiplier,
+                    amount: rng.random_range(54.0..56.0) * state.boss_multiplier,
                 }
                 .apply(&env.clock, unit);
                 break;
@@ -1098,11 +1098,11 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
     if state.boss_eruption.tick(&env.clock).is_err() {
         state
             .boss_eruption
-            .reset(rng.gen_range(7.9, 8.1) / state.boss_multiplier);
+            .reset(rng.random_range(7.9..8.1) / state.boss_multiplier);
         for unit in &mut state.units {
             if unit.is_alive() {
                 UnitEffect::Damage {
-                    amount: rng.gen_range(64.0, 66.0) * state.boss_multiplier,
+                    amount: rng.random_range(64.0..66.0) * state.boss_multiplier,
                 }
                 .apply(&env.clock, unit);
             }
@@ -1111,9 +1111,9 @@ fn encounter<R: rand::Rng>(env: &Env, state: &mut State, rng: &mut R) {
     }
 }
 
-fn get_image(window: &mut PistonWindow, name: &str) -> G2dTexture {
+fn get_image(context: &mut G2dTextureContext, name: &str) -> G2dTexture {
     Texture::from_path(
-        &mut window.factory,
+        context,
         &Path::new("assets").join(Path::new(name)),
         Flip::None,
         &TextureSettings::new(),
@@ -1122,8 +1122,9 @@ fn get_image(window: &mut PistonWindow, name: &str) -> G2dTexture {
 }
 
 fn main() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut window: PistonWindow = WindowSettings::new("healsim", [640, 480]).build().unwrap();
+    let mut texture_context = window.create_texture_context();
 
     // game state
     let mut env = Env {
@@ -1131,9 +1132,9 @@ fn main() {
         mouse_pos: [0.0, 0.0],
         hitbox_id: None,
         textures: vec![
-            get_image(&mut window, "icon1.png"),
-            get_image(&mut window, "icon3.png"),
-            get_image(&mut window, "icon2.png"),
+            get_image(&mut texture_context, "icon1.png"),
+            get_image(&mut texture_context, "icon3.png"),
+            get_image(&mut texture_context, "icon2.png"),
         ],
     };
     let mut queue = Vec::new();
@@ -1145,7 +1146,7 @@ fn main() {
     }
 
     while let Some(e) = window.next() {
-        window.draw_2d(&e, |c, g| state.interface.draw(&env, &state, c, g));
+        window.draw_2d(&e, |c, g, _| state.interface.draw(&env, &state, c, g));
 
         env.clock.update();
         if let Some(pos) = e.mouse_cursor_args() {
